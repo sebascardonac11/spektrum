@@ -14,3 +14,5 @@ https://github.com/makersdigest/T04-MCP3008
 
 Guia de Altimetro
 https://www.instructables.com/RC-Plane-Altimeter-compatible-With-Spektrum-Teleme/
+
+Phrase: Daytona
