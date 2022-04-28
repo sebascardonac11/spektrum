@@ -1,0 +1,193 @@
+#include <Wire.h>
+#include <Adafruit_Sensor.h>
+#include "Adafruit_BMP3XX.h"
+#include "spektrum_xbus.h"
+
+#define SEALEVELPRESSURE_HPA (1013.25)
+#define BMP_CS      1
+#define LED_PIN    13
+#define BUTTON_PIN  2
+#define READY_PIN   3
+
+
+Adafruit_BMP3XX bmp(BMP_CS);
+
+STRU_TELE_ALT alt_struct;
+
+// Samples to read before saving data
+int16_t counter = 100;
+int16_t raw_altitude = 0;
+
+const uint8_t spek_data_size = 16;
+byte spek_data_1[spek_data_size];
+byte spek_data_2[spek_data_size];
+bool write_buff_1 = true;
+byte * buff_ptr;
+
+int16_t starting_altitude = 0;
+bool start_alt_set = false;
+
+
+void i2cRequestEvent(){
+
+  // Write the altitude data to the I2C bus
+  if (write_buff_1){
+    Wire.write(spek_data_2, 16);
+  } else {
+    Wire.write(spek_data_1, 16);
+  }
+
+  // Alternate the LED to show there are I2C events
+  digitalWrite(LED_PIN, write_buff_1);
+  
+}
+
+
+void resetStartingAltitude(){
+
+  digitalWrite(LED_PIN, LOW);
+  
+  // Set the starting altitude and reset the max altitude
+  starting_altitude = raw_altitude;
+
+  alt_struct.altitude = 0;
+  alt_struct.maxAltitude = 0;
+
+  start_alt_set = true;
+
+  digitalWrite(LED_PIN, HIGH);
+  
+}
+
+
+void readAltitudeData(){
+
+  raw_altitude = (int16_t)(bmp.readAltitude(SEALEVELPRESSURE_HPA)*10);
+  alt_struct.altitude = raw_altitude - starting_altitude;
+  
+  if (alt_struct.altitude > alt_struct.maxAltitude){
+    alt_struct.maxAltitude = alt_struct.altitude;
+  }
+
+  // Don't start saving data until we've had enough samples
+  if (!start_alt_set){
+    
+    counter--;
+    
+    if (counter <= 0){
+      resetStartingAltitude();
+    }
+  }
+  
+  saveAltitudeData();
+
+  Serial.print("Alt: ");
+  Serial.print(alt_struct.altitude);
+  Serial.print("; Max: ");
+  Serial.println(alt_struct.maxAltitude);
+  
+}
+
+
+/**
+ * Save the data into two different buffers. Alternate between
+ * which buffer is used so that if the I2C routine interrupts
+ * in the middle of a save, the other buffer is used.
+ */
+void saveAltitudeData(){
+
+  if (write_buff_1){
+    buff_ptr = spek_data_1;
+  } else {
+    buff_ptr = spek_data_2;
+  }
+
+  // Clear out the buffer before writing to it
+  memset(buff_ptr, 0, spek_data_size);
+  
+  buff_ptr[0] = TELE_DEVICE_ALTITUDE;
+
+  // Only send the altitude data if the starting altitude has been set.
+  if (start_alt_set){
+    // Save the current altitude
+    buff_ptr[2] = highByte(alt_struct.altitude);
+    buff_ptr[3] = lowByte(alt_struct.altitude);
+  
+    // Save the max altitude
+    buff_ptr[4] = highByte(alt_struct.maxAltitude);
+    buff_ptr[5] = lowByte(alt_struct.maxAltitude);
+  }
+
+  // Switch which buffer is used
+  write_buff_1 = !write_buff_1;
+  
+}
+
+
+void setupI2C(){
+
+  // Start the client I2C device
+  Wire.onRequest(i2cRequestEvent);
+  Wire.begin(TELE_DEVICE_ALTITUDE);
+
+}
+
+
+void setupAltimeter(){
+
+  alt_struct.identifier = TELE_DEVICE_ALTITUDE;
+  alt_struct.sID = 0;
+  alt_struct.altitude = 0;
+  alt_struct.maxAltitude = 0;
+
+  if (!bmp.begin()) {
+    Serial.println("Could not find the BMP388 sensor, check wiring!");
+
+    //Alternate the LED forever so we know the sensor was not found.
+    while (1) {
+      digitalWrite(LED_PIN, LOW);
+      delay(1000);
+      digitalWrite(LED_PIN, HIGH);
+      delay(1000);
+    }
+  }
+
+  // Set up oversampling and filter initialization. Set for drone navigation
+  bmp.setTemperatureOversampling(BMP3_OVERSAMPLING_2X);
+  bmp.setPressureOversampling(BMP3_OVERSAMPLING_16X);
+  bmp.setIIRFilterCoeff(BMP3_IIR_FILTER_COEFF_7);
+  bmp.setOutputDataRate(BMP3_ODR_100_HZ);
+
+  Serial.println("BMP388 ready.");
+  
+}
+
+
+void setup() {
+
+  Serial.begin(115200);
+  pinMode(LED_PIN, OUTPUT);
+  pinMode(READY_PIN, OUTPUT);
+  pinMode(BUTTON_PIN, INPUT);
+
+  digitalWrite(READY_PIN, HIGH);
+  digitalWrite(LED_PIN, LOW);
+
+  setupI2C();
+  setupAltimeter();
+
+  // Make the button release reset the starting altitude
+  attachInterrupt(digitalPinToInterrupt(BUTTON_PIN), resetStartingAltitude, FALLING); 
+
+  Serial.println("\n\nTelemi ready...");
+  digitalWrite(READY_PIN, LOW);
+  digitalWrite(LED_PIN, HIGH);
+
+}
+
+void loop() {
+
+  readAltitudeData();
+  delay(20);
+
+}
